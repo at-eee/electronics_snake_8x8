@@ -1,12 +1,14 @@
+//Before changes/updates: 25.08.25 (before working in: 20.08.25)
 // Project made using 1588BS 8x8 LED matrix (red, common-anode).
-/// Version with demultiplexer (Arudino Uno has very limiting pin amount 
-/// as for let's say: 16 matrix display, hence the demultiplexer (for rows??) was used.)
-/// x I didn't have 4x16 demux outputting HIGH state, so I had to use demux outputting low state (CD4515BCN) + the NOT gates (3x SN74HC04N)
-/// x I didn't have 3x8 demux outputting HIGH state, so I had to use demux outputting low state (CD4515BCN) + the NOT gates (3x SN74HC04N)
+/// Version with demultiplexer: Arudino Uno has very limiting pin amount 
+/// as for let's say: 16 matrix display, hence the demultiplexer for the LED matrix rows was used.
+/// x I didn't have 4x16 demux outputting HIGH state, so I had to use demux outputting low state (CD4515BCN) + the NOT gates (2x SN74HC04N)
+/// x I didn't have 3x8 demux outputting HIGH state, so I had to use demux outputting low state (CD4515BCN) + the NOT gates (2x SN74HC04N)
 /// I would preferably use demux with HIGH output state (like even CD4515BCN), because it would make things easier but I only had outputting LOW (SN74LS13BN) so:
-/// I used 3x8 demux outputting LOW state for rows (SN74LS13BN) + NOT gates (2x SN74HC04N)
+/// I used 3x8 demux outputting LOW state for rows (SN74LS13BN) + NOT gates (2x SN74HC04N) (Everything for steering only rows)
 
 #include <stdlib.h>
+#include <avr/wdt.h>
 
 // 8 column pins:
 #define PIN_A 6
@@ -18,6 +20,11 @@
 #define PIN_G 12
 #define PIN_H 13
 
+//! Change some of the things in this code to bit manipulation instead of full bytes, if only info like ON/OFF is needed?
+//! Is this a more professional solution?
+//! Do it probably more like a training or smart memory saving.
+// preventing returning direction input???
+
 // 3 row select pins:
 // (3 demux input (output select) pins connected to arduino)
 // (i.e: pins used to select one of the 8 columns (row pins) via demux outputs)
@@ -25,6 +32,8 @@
 #define DEMUX_PIN_1 A1
 #define DEMUX_PIN_2 A2
 // Where the DEMUX_PIN_0 is the least significant bit and DEMUX_PIN_2 is the most significant bit.
+
+// Spróbować to jeszcze zassemblować w przyszłości
 
 // Button pins:
 #define LEFT_BUTTON 2
@@ -42,16 +51,22 @@
 #define ROWS 8
 #define COLS 8
 
-#define LETTER_INTRO_TIME 1000 //in ms, time for display of every letter in intro.
+//#define LETTER_INTRO_TIME 1000 // in ms, time for display of every letter in intro.
+#define LETTER_SLIDE_TIME 75 // in ms, the time it takes for a letter to move by 1 cell.
+#define MOVEMENT_WAIT_TIME 1000 // in ms, time game waits for player's input.
+
+//Experimental (as well any lines using it - the flickering of the given row is pretty annoying/misleading and shall be solved before)
+//#define HEAD_BLINK_TIME 200
+//#define APPLE_BLINK_TIME 800
 
 // Snake data structure
 struct snake{
   // Previous snake's segment
   struct snake* prev;
   struct snake* next;
-  int pos_x; // "row" index
-  int pos_y; // "column" index
-  byte direction;
+  int8_t pos_x; // "row" index
+  int8_t pos_y; // "column" index
+  int8_t direction;
 };
 //this might be unoptimal for game logic
 //only tail instead?
@@ -59,19 +74,21 @@ struct snake{
 // Stores states of all of the LEDs on the 8x8 matrix
 //byte cell_states[ROWS][COLS] = {0};
 
-// 
-int padding[200] = {0}; //somehow, some amount of my microcontroller's memory was corrupted, so i had to use this
-byte snake_fields[ROWS][COLS] = {0}; // 0 is empty field, 1 is snake, and 2 is apple.
+byte snake_fields[ROWS][COLS] = {0}; // 0 is empty field, 1 is snake's body, 2 is tail, and 3 is apple.
 //(use these later:)
 #define EMPTY_FIELD 0
 #define SNAKE 1
-#define APPLE 2
+#define TAIL  2
+#define APPLE 3
+//!!!Change defines to enums later?
+//Making player unable to retrurn later?
 //byte snake_direction;
 // Position of the snake's head:
-struct snake head = {.prev = nullptr, .next = nullptr, .pos_x = -1, .pos_y = -1, .direction = -1};
-struct snake* snake_head = &head;
-struct snake* tail = &head;
-//int tail_pos_x, tail_pos_y;
+//struct snake head = {.prev = nullptr, .next = nullptr, .pos_x = -1, .pos_y = -1, .direction = -1};
+struct snake* snake_head = malloc(sizeof(struct snake));
+struct snake* tail = snake_head;
+bool game_over = false; // If equals to true, current game is over.
+int8_t apple_location_x = -1, apple_location_y = -1;
 
 // Maybe COL_OFF, COL_ON, ROW_OFF and ROW_ON macros later?
 
@@ -156,11 +173,6 @@ void set_state(int row, int col, byte state){
   snake_fields[row][col] = state;
 }
 
-/*void hide_cell(int row, int col){
-  cell_states[row][column] = LOW;
-}*/
-//pros and cons?
-
 // Clears all the current column states.
 void clear_row(){ // (Doesn't reset (set to 0) the actual snake_fields, but sets the column states of the previous row to low (physical arduino
                   // pins) instead, to prevent them from influencing the displaying of the next rows).
@@ -174,14 +186,14 @@ void clear_row(){ // (Doesn't reset (set to 0) the actual snake_fields, but sets
 
 // Resets all of the LED states (snake_fields) to 0.
 void clear_states(){
-  for(int i = 0; i < ROWS; i++)
+  for(int i = 0; i < ROWS; i++) //probably just much better to change this to memcpy(ROWS*COLS).
     for(int j = 0; j < COLS; j++){
       set_state(i, j, 0);
     }
 }
 
 // Decodes passed value to a selected demux output pin
-void demux_row_decode(int pin){
+void demux_row_decode(uint8_t pin){
 
   switch(pin){
       case 0:
@@ -228,8 +240,25 @@ void demux_row_decode(int pin){
 
 }
 
+//unsigned long apple_blink_timing = millis(); // Stores the time from before movement_wait().
+//unsigned long head_blink_timing = millis(); // Stores the time from before movement_wait().
+
 // Think about negating display as a flag ?
 int refresh_screen(){
+
+  //byte temp_snake;
+  //byte temp_apple;
+  //unsigned long time_check = millis();
+
+  /*if(time_check - head_blink_timing > HEAD_BLINK_TIME){
+    temp_snake = snake_fields[snake_head->pos_x][snake_head->pos_y]; // temp variable to remember the apple's state.
+    set_state(snake_head->pos_x, snake_head->pos_y, EMPTY_FIELD);
+  }*/
+
+  /*if(time_check - apple_blink_timing > APPLE_BLINK_TIME && !game_over){
+    temp_apple = snake_fields[apple_location_x][apple_location_y]; // temp variable to remember the snake's head state.
+    set_state(apple_location_x, apple_location_y, EMPTY_FIELD);
+  }*/
 
   for(int i = 0; i < ROWS; i++){
 
@@ -247,12 +276,27 @@ int refresh_screen(){
 
   }
 
+  /*if(time_check - head_blink_timing > HEAD_BLINK_TIME){
+    set_state(snake_head->pos_x, snake_head->pos_y, temp_snake);
+    snake_fields[snake_head->pos_x][snake_head->pos_y] = temp_snake;
+    if(time_check - head_blink_timing > 2 * HEAD_BLINK_TIME){
+      head_blink_timing = millis(); //if the time has passed (time reached x2 the value) reset the timer.
+    }
+  }*/
+  /*if(time_check - apple_blink_timing > APPLE_BLINK_TIME && !game_over){
+    set_state(apple_location_x, apple_location_y, temp_apple);
+    snake_fields[apple_location_x][apple_location_y] = temp_apple;
+    if(time_check - apple_blink_timing > 2 * APPLE_BLINK_TIME){
+      apple_blink_timing = millis(); //if the time has passed (time reached x2 the value) reset the timer.
+    }
+  }*/
+
   return 0;
 
 }
 
 // Displays specified letter on 8x8 LED matrix (more precisely, sets the 8x8 cell matrix fields to specified values (LOW/HIGH states)).
-void display_letter(char letter){
+void display_letter(char letter, int offset){
 
   switch(letter){
     case 'S':
@@ -272,45 +316,56 @@ void display_letter(char letter){
       break;
   }
 
+  //if(offset >= COLS || -offset >= COLS)
+
+  //Negative offset = to right, positive offset = to left.
+  if(offset < 0){
+
+    if(offset <= -COLS)
+      offset = -COLS;
+
+    for(int row = 0; row < ROWS; row++){
+      for(int j = COLS-1; j >= -offset; j--)
+        snake_fields[row][j] = snake_fields[row][j+offset];
+      for(int j = 0; j < -offset; j++)
+        snake_fields[row][j] = 0;
+    }
+
+  }else{
+
+    if(offset >= COLS)
+      offset = COLS;
+
+    for(int row = 0; row < ROWS; row++){
+      for(int j = 0; j < COLS-offset; j++)
+        snake_fields[row][j] = snake_fields[row][j+offset];
+      for(int j = COLS-offset; j < COLS; j++)
+        snake_fields[row][j] = 0;
+    }
+
+  }
 }
 
 void add_snake_segment(){
 
   struct snake* new_node = malloc(sizeof(struct snake));
-  if(snake_head->prev == nullptr){ // If snake is of length 1 (! think about shortening this)
 
-    tail = new_node;
+  if(snake_head->prev == nullptr){ // in case snake is of length 1.
+
+    tail = new_node; // head not longer equals tail, now head is one segment and tail is one
     tail->next = snake_head;
     tail->prev = nullptr;
     snake_head->prev = tail;
-    tail->pos_x = snake_head->pos_x;
-    tail->pos_y = snake_head->pos_y;
 
-    switch(snake_head->direction){
-      case LEFT:
-        tail->pos_y += 1; // *(-1) because it will be spawn/added 1 pixel to the opposite direction.
-        break;
-      case UP:
-        tail->pos_x += 1;
-        break;
-      case RIGHT:
-        tail->pos_y -= 1;
-        break;
-      case DOWN:
-        tail->pos_x -= 1;
-        break;
-    }
+  }else{ // in case snake is of length 2+.
+    
+    new_node->next = tail;
+    new_node->prev = nullptr;
+    tail->prev = new_node; // Now current tail becomes normal second to last snake segment
+    tail = new_node; // And the new_node is the new tail.
 
-    tail->direction = tail->next->direction;
-
-    return;
   }
 
-  // in case snake is of length 2+.
-  new_node->next = tail;
-  new_node->prev = nullptr;
-  tail->prev = new_node;
-  tail = new_node;
   tail->pos_x = tail->next->pos_x;
   tail->pos_y = tail->next->pos_y;
 
@@ -331,11 +386,11 @@ void add_snake_segment(){
 
   tail->direction = tail->next->direction;
   return;
-
-  //Przesledzic/przewertować/skim through it jezcze
 }
 
-void move_snake(){
+int move_snake(){
+
+  //! Instead of moving all the snake segments, just make a new segment in the new direction of the head, and assign tail to it's "next" pointer then delete old tail.
 
   // Head (snake's front logic)
   struct snake* new_head = malloc(sizeof(struct snake)); //0x2
@@ -346,18 +401,29 @@ void move_snake(){
   switch(snake_head->direction){
     case LEFT:
       new_head->pos_y -= 1;
+      if(new_head->pos_y < 0) // Boundaries check.
+        new_head->pos_y = COLS-1;
       break;
     case UP:
       new_head->pos_x -= 1;
+      if(new_head->pos_x < 0)
+        new_head->pos_x = ROWS-1;
       break;
     case RIGHT:
       new_head->pos_y += 1;
+      if(new_head->pos_y > COLS-1)
+        new_head->pos_y = 0;
       break;
     case DOWN:
       new_head->pos_x += 1;
+      if(new_head->pos_x > ROWS-1)
+        new_head->pos_x = 0;
       break;
   }
-  //!!! Checks for borders/bounds of matrix!!!
+
+    //v Simply, this checks what were the last positions drew on the screen (tail is excluded (enum))
+  if(snake_fields[new_head->pos_x][new_head->pos_y] == SNAKE) //If on the field we want to move our snake's head is a snake body/segment already, game over.
+    return -1; // Game Over.
 
   new_head->direction = snake_head->direction;
   new_head->prev = snake_head; //0x1
@@ -366,47 +432,73 @@ void move_snake(){
   //^variable storing 0x1, stores 0x2 now.
 
   // Tail (snake's back logic)
-  if(snake_head->prev->prev == nullptr){ // If snake was of length 1, discard node/segment behind the snake's head.
+  if(snake_head->prev->prev == nullptr){ // If snake was of length 1 (temporary length 2), discard node/segment behind the snake's head.
     free(snake_head->prev);
     snake_head->prev = nullptr; // In order to avoid dangling pointer.
     tail = snake_head; // setting tail to head (because snake is of length 1)/
-    return;
-  }else if(snake_head->prev->prev == tail){ // If snake is of length 2 (later think if that's the same as for length n).
-    tail = snake_head->prev;
-    free(snake_head->prev->prev);
-    tail->prev = nullptr; // (same as: snake_head->prev->prev = nullptr?)
-    return;
+    return 0;
   }
   
   tail = tail->next;
   free(tail->prev);
   tail->prev = nullptr; // In order to avoid dangling pointer.
+  return 0;
 
 }
 
 void draw_snake(){
 
-  //snake_fields[snake_head->pos_x][snake_head->pos_y] = 1;
-  set_state(snake_head->pos_x, snake_head->pos_y, 1);
+  set_state(snake_head->pos_x, snake_head->pos_y, SNAKE); //Marks snake body location on snake's game fields (LED matrix)
+
+  if(snake_head->prev == nullptr) // If snake is of length 1.
+    goto apple;
+
   struct snake* previous = snake_head->prev;
-  while(previous != nullptr){
-    //snake_fields[previous->pos_x][previous->pos_y] = 1;
-    set_state(previous->pos_x, previous->pos_y, 1);
+
+  while(1){
+
+    set_state(previous->pos_x, previous->pos_y, SNAKE); //Marks snake body location on snake's game fields
+
+    if(previous->prev == nullptr){
+      set_state(previous->pos_x, previous->pos_y, TAIL); //Marks tail location on snake's game fields
+      break;
+    }
     previous = previous->prev;
+
   }
+
+  apple:
+
+  set_state(apple_location_x, apple_location_y, APPLE); //Marks apple location on snake's game fields
+}
+
+void apple_eat_logic(){ // (Apple + eating logic).
+
+  // If snake's head hits the apple's cell.
+  if(snake_head->pos_x == apple_location_x && snake_head->pos_y == apple_location_y){
+
+    add_snake_segment(); // Extend snake's length by 1.
+
+    do{
+      apple_location_x = random(ROWS); // Randomize value from 0 to ROWS-1
+      apple_location_y = random(COLS);
+    }while(snake_fields[apple_location_x][apple_location_y]); // is not empty (is non-zero).
+
+  }
+
 }
 
 void game_logic(){
 
-  //this logic will change later, but removing the old snake's head "location".
-  //snake_fields[snake_head->pos_x][snake_head->pos_y] = 0;
-  clear_states();
+  // Performs snake movement logic.
+  if(move_snake() == -1){ // If move_snake() returned -1 move was illegal or results in losing (hence game over).
+    game_over = true;
+    return;
+  }
 
-  //! Instead of moving all the snake segments, just make a new segment in the new direction of the head, and assign tail to it's "next" pointer then delete old tail.
-
-  move_snake(); // Performs snake movement logic.
-  draw_snake(); // Marks LED matrix cells to turn on.
-  //snake_fields[snake_head->pos_x][snake_head->pos_y] = 1;
+  apple_eat_logic();
+  clear_states(); // Clears current states before marking.
+  draw_snake(); // Marks cells on LED matrix to turn ON after the function ends.
 
 }
 
@@ -435,7 +527,8 @@ int movement_wait(){
     return 0;
   }
 
-  delay(200); // Prevent accidental "double-press".
+  //delay(200); // Prevent accidental "double-press".
+  timed_event(200, refresh_screen);
   return snake_head->direction;
 
 }
@@ -451,6 +544,39 @@ int timed_event(int time_ms, int(*task)()){
     end_time = millis();
   }while(end_time - start_time < time_ms && !ret_val);
 }
+
+//Could technically make it by byte shifting...
+void sliding_letters_intro(){
+
+  char intro_text[] = "SNAKE\0";
+  int letter_idx = 0;
+
+  while(intro_text[letter_idx] != '\0'){
+
+    for(int offset = -COLS; offset < COLS; offset++){
+      display_letter(intro_text[letter_idx], offset);
+      timed_event(LETTER_SLIDE_TIME, refresh_screen);
+    }
+
+    letter_idx++;
+  }
+}
+
+/*void intro_screen()
+
+  display_letter('S');
+  timed_event(LETTER_INTRO_TIME, refresh_screen);
+  display_letter('N');
+  timed_event(LETTER_INTRO_TIME, refresh_screen);
+  display_letter('A');
+  timed_event(LETTER_INTRO_TIME, refresh_screen);
+  display_letter('K');
+  timed_event(LETTER_INTRO_TIME, refresh_screen);
+  display_letter('E');
+  timed_event(LETTER_INTRO_TIME, refresh_screen);
+
+  clear_states();
+}*/
 
 void setup() {
 
@@ -476,40 +602,41 @@ void setup() {
   pinMode(RIGHT_BUTTON, INPUT_PULLUP);
   pinMode(DOWN_BUTTON, INPUT_PULLUP);
 
-  display_letter('S');
-  timed_event(LETTER_INTRO_TIME, refresh_screen);
-  display_letter('N');
-  timed_event(LETTER_INTRO_TIME, refresh_screen);
-  display_letter('A');
-  timed_event(LETTER_INTRO_TIME, refresh_screen);
-  display_letter('K');
-  timed_event(LETTER_INTRO_TIME, refresh_screen);
-  display_letter('E');
-  timed_event(LETTER_INTRO_TIME, refresh_screen);
-  clear_states();
+  //intro_screen();
+  sliding_letters_intro();
 
   //setting up the beginning position of the snake.
-  //head_pos_x = ROWS/2 - 1;
-  //head_pos_y = COLS/2 - 1;
   snake_head->pos_x = ROWS/2 - 1;
   snake_head->pos_y = COLS/2 - 1;
-  //set_state(snake_head->pos_x, snake_head->pos_y, 1);
+  snake_head->prev = nullptr;
+  snake_head->next = nullptr;
   snake_head->direction = RIGHT;
 
-  //somehow, some amount of my microcontroller's memory was corrupted, so i had to use this:
-  padding[199] = 0;
-  if(padding[0] == 0){
-    digitalWrite(A4, LOW);
-  }
+  add_snake_segment();
+  add_snake_segment();
 
-  add_snake_segment();
-  add_snake_segment();
+  randomSeed(analogRead(A5)); // Randomizing the seed
+
+  do{
+    apple_location_x = random(ROWS);
+    apple_location_y = random(COLS);
+  }while(snake_fields[apple_location_x][apple_location_y]); //is not empty (is non zero)
+
 }
 
 void loop() {
 
-  timed_event(1000, movement_wait);
+  timed_event(MOVEMENT_WAIT_TIME, movement_wait);
 
   game_logic();
+
+  if(game_over){
+    wdt_enable(WDTO_4S); // Reset the device (after 3 seconds) i.e: start the new game again.
+    while(1){
+      timed_event(500, refresh_screen); //flicker during game over rate test
+      refresh_screen(); //stuck the player on refresh screen without being able to move
+      delay(500); //flicker during game over rate test
+    }
+  }
 
 }

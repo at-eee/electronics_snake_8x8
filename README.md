@@ -3,7 +3,6 @@ Unpolished (finished?) snake game made for 8x8 LED display (without ready driver
 
 # TODO:
 
-- Fix memory issues solved by veeery provisional memory padding and check for other possible memory leaks (eh, why did I do that back when I made that project...)
 - Change or make version with data structures that are static memory, because while using linked list is a nice exercise, it's a less professional/commercial approach
 - Fix some of the edge cases and check for possible bound checking issues
 
