@@ -1,11 +1,8 @@
-//Before changes/updates: 25.08.25 (before working in: 20.08.25)
 // Project made using 1588BS 8x8 LED matrix (red, common-anode).
 /// Version with demultiplexer: Arudino Uno has very limiting pin amount 
 /// as for let's say: 16 matrix display, hence the demultiplexer for the LED matrix rows was used.
-/// x I didn't have 4x16 demux outputting HIGH state, so I had to use demux outputting low state (CD4515BCN) + the NOT gates (2x SN74HC04N)
-/// x I didn't have 3x8 demux outputting HIGH state, so I had to use demux outputting low state (CD4515BCN) + the NOT gates (2x SN74HC04N)
-/// I would preferably use demux with HIGH output state (like even CD4515BCN), because it would make things easier but I only had outputting LOW (SN74LS13BN) so:
-/// I used 3x8 demux outputting LOW state for rows (SN74LS13BN) + NOT gates (2x SN74HC04N) (Everything for steering only rows)
+/// I would preferably use demux with HIGH output state if I had it (like even CD4515BCN), because it would make things easier but I only had outputting
+/// LOW (SN74LS13BN) so:  I used 3x8 demux outputting LOW state for rows (SN74LS13BN) + NOT gates (2x SN74HC04N) (Everything for steering only rows)
 
 #include <stdlib.h>
 #include <avr/wdt.h>
@@ -23,7 +20,6 @@
 //! Change some of the things in this code to bit manipulation instead of full bytes, if only info like ON/OFF is needed?
 //! Is this a more professional solution?
 //! Do it probably more like a training or smart memory saving.
-// preventing returning direction input???
 
 // 3 row select pins:
 // (3 demux input (output select) pins connected to arduino)
@@ -33,8 +29,6 @@
 #define DEMUX_PIN_2 A2
 // Where the DEMUX_PIN_0 is the least significant bit and DEMUX_PIN_2 is the most significant bit.
 
-// Spróbować to jeszcze zassemblować w przyszłości
-
 // Button pins:
 #define LEFT_BUTTON 2
 #define UP_BUTTON 3
@@ -42,7 +36,7 @@
 #define DOWN_BUTTON 5
 
 // Snake directions:
-#define LEFT 1 //(0 before) Fixed.
+#define LEFT 1
 #define UP 2
 #define RIGHT 3
 #define DOWN 4
@@ -54,8 +48,9 @@
 //#define LETTER_INTRO_TIME 1000 // in ms, time for display of every letter in intro.
 #define LETTER_SLIDE_TIME 75 // in ms, the time it takes for a letter to move by 1 cell.
 #define MOVEMENT_WAIT_TIME 1000 // in ms, time game waits for player's input.
+//#define // in ms, flicker rate time during game over screen
 
-//Experimental (as well any lines using it - the flickering of the given row is pretty annoying/misleading and shall be solved before)
+//!Experimental (as well any lines using it - the flickering of the given row is pretty annoying/misleading and shall be solved before)
 //#define HEAD_BLINK_TIME 200
 //#define APPLE_BLINK_TIME 800
 
@@ -67,6 +62,7 @@ struct snake{
   int8_t pos_x; // "row" index
   int8_t pos_y; // "column" index
   int8_t direction;
+  int8_t type;  // 0 is empty field, 1 is snake's body, 2 is tail, and 3 is apple.
 };
 //this might be unoptimal for game logic
 //only tail instead?
@@ -74,7 +70,7 @@ struct snake{
 // Stores states of all of the LEDs on the 8x8 matrix
 //byte cell_states[ROWS][COLS] = {0};
 
-byte snake_fields[ROWS][COLS] = {0}; // 0 is empty field, 1 is snake's body, 2 is tail, and 3 is apple.
+byte snake_fields[ROWS] = {0b00000000};
 //(use these later:)
 #define EMPTY_FIELD 0
 #define SNAKE 1
@@ -94,50 +90,50 @@ int8_t apple_location_x = -1, apple_location_y = -1;
 
 // Letters:
 
-const byte LETTER_S[8][8] = {{0, 1, 1, 1, 1, 1, 1, 0},
-                             {0, 1, 0, 0, 0, 0, 0, 0},
-                             {0, 1, 0, 0, 0, 0, 0, 0},
-                             {0, 1, 1, 1, 1, 1, 1, 0},
-                             {0, 0, 0, 0, 0, 0, 1, 0},
-                             {0, 0, 0, 0, 0, 0, 1, 0},
-                             {0, 0, 0, 0, 0, 0, 1, 0},
-                             {0, 1, 1, 1, 1, 1, 1, 0}};
+const byte LETTER_S[8] = {0b01111110,
+                          0b01000000,
+                          0b01000000,
+                          0b01111110,
+                          0b00000010,
+                          0b00000010,
+                          0b00000010,
+                          0b01111110};
 
-const byte LETTER_N[8][8] = {{1, 0, 0, 0, 0, 0, 0, 1},
-                             {1, 1, 0, 0, 0, 0, 0, 1},
-                             {1, 0, 1, 0, 0, 0, 0, 1},
-                             {1, 0, 0, 1, 0, 0, 0, 1},
-                             {1, 0, 0, 0, 1, 0, 0, 1},
-                             {1, 0, 0, 0, 0, 1, 0, 1},
-                             {1, 0, 0, 0, 0, 0, 1, 1},
-                             {1, 0, 0, 0, 0, 0, 0, 1},};
+const byte LETTER_N[8] = {0b10000001,
+                          0b11000001,
+                          0b10100001,
+                          0b10010001,
+                          0b10001001,
+                          0b10000101,
+                          0b10000011,
+                          0b10000001};
 
-const byte LETTER_A[8][8] = {{0, 0, 0, 1, 1, 0, 0, 0},
-                             {0, 0, 1, 0, 0, 1, 0, 0},
-                             {0, 0, 1, 0, 0, 1, 0, 0},
-                             {0, 1, 0, 0, 0, 0, 1, 0},
-                             {0, 1, 1, 1, 1, 1, 1, 0},
-                             {1, 0, 0, 0, 0, 0, 0, 1},
-                             {1, 0, 0, 0, 0, 0, 0, 1},
-                             {1, 0, 0, 0, 0, 0, 0, 1},};
+const byte LETTER_A[8] = {0b00011000,
+                          0b00100100,
+                          0b00100100,
+                          0b01000010,
+                          0b01111110,
+                          0b10000001,
+                          0b10000001,
+                          0b10000001};
 
-const byte LETTER_K[8][8] = {{0, 1, 0, 0, 0, 1, 0, 0},
-                             {0, 1, 0, 0, 1, 0, 0, 0},
-                             {0, 1, 0, 1, 0, 0, 0, 0},
-                             {0, 1, 1, 0, 0, 0, 0, 0},
-                             {0, 1, 1, 0, 0, 0, 0, 0},
-                             {0, 1, 0, 1, 0, 0, 0, 0},
-                             {0, 1, 0, 0, 1, 0, 0, 0},
-                             {0, 1, 0, 0, 0, 1, 0, 0},};
+const byte LETTER_K[8] = {0b01000100,
+                          0b01001000,
+                          0b01010000,
+                          0b01100000,
+                          0b01100000,
+                          0b01010000,
+                          0b01001000,
+                          0b01000100};
 
-const byte LETTER_E[8][8] = {{0, 1, 1, 1, 1, 1, 1, 0},
-                             {0, 1, 0, 0, 0, 0, 0, 0},
-                             {0, 1, 0, 0, 0, 0, 0, 0},
-                             {0, 1, 1, 1, 1, 1, 1, 0},
-                             {0, 1, 0, 0, 0, 0, 0, 0},
-                             {0, 1, 0, 0, 0, 0, 0, 0},
-                             {0, 1, 0, 0, 0, 0, 0, 0},
-                             {0, 1, 1, 1, 1, 1, 1, 0},};
+const byte LETTER_E[8] = {0b01111110,
+                          0b01000000,
+                          0b01000000,
+                          0b01111110,
+                          0b01000000,
+                          0b01000000,
+                          0b01000000,
+                          0b01111110};
 
 /*
 Pin layout of 1588BS LED 8x8 matrix screen:
@@ -149,7 +145,7 @@ A-H - column identifiers (Activated by negative current)
                         |
                         v
 LED matrix identifiers  physical (display) pins   Demux output pins:    pins on arduino:
-0                       9                         0                     selected by demux (managed by arduino pins 2-4)
+0                       9                         0                     selected by demux (managed by arduino pins A0-A2)
 1                       14                        1                     - || -
 2                       8                         2                     - || -
 3                       12                        3                     - || -
@@ -170,11 +166,16 @@ H                       16                        -                     13
 
 // Sets the state of the singular ("cell" i.e:) LED on our LED matrix. Specifying the row, column (to pick the right LED) and state is required.
 void set_state(int row, int col, byte state){
-  snake_fields[row][col] = state;
+  
+  if(state == APPLE || state == TAIL)
+    state = 1;
+
+  snake_fields[row] |= (state << col);
+  
 }
 
 // Clears all the current column states.
-void clear_row(){ // (Doesn't reset (set to 0) the actual snake_fields, but sets the column states of the previous row to low (physical arduino
+void clear_cols(){ // (Doesn't reset (set to 0) the actual snake_fields, but sets the column states of the previous row to low (physical arduino
                   // pins) instead, to prevent them from influencing the displaying of the next rows).
 
   // Clears colums:
@@ -186,13 +187,11 @@ void clear_row(){ // (Doesn't reset (set to 0) the actual snake_fields, but sets
 
 // Resets all of the LED states (snake_fields) to 0.
 void clear_states(){
-  for(int i = 0; i < ROWS; i++) //probably just much better to change this to memcpy(ROWS*COLS).
-    for(int j = 0; j < COLS; j++){
-      set_state(i, j, 0);
-    }
+  for(int i = 0; i < ROWS; i++)
+    snake_fields[i] = 0b00000000;
 }
 
-// Decodes passed value to a selected demux output pin
+// Decodes passed value to a selected demux's output pin
 void demux_row_decode(uint8_t pin){
 
   switch(pin){
@@ -266,14 +265,10 @@ int refresh_screen(){
     demux_row_decode(i);
 
     for(int j = 0; j < COLS; j++){
-        digitalWrite(j + PIN_A, !snake_fields[i][j]); // We had to change cell states to negation before applying because for columns LOW = ON.
+        digitalWrite( j + PIN_A, !(snake_fields[i] & (0b10000000 >> j)) ); // We had to change cell states to negation before applying because for columns LOW = ON.
     }
     
-    delay(1); // Delay in ms
-    // Making sure we turn off this row after. - we no longer need to make sure (demultiplexer)
-    // digitalWrite(i + PIN_0, LOW);
-    clear_row();
-
+    clear_cols();
   }
 
   /*if(time_check - head_blink_timing > HEAD_BLINK_TIME){
@@ -316,19 +311,23 @@ void display_letter(char letter, int offset){
       break;
   }
 
-  //if(offset >= COLS || -offset >= COLS)
-
   //Negative offset = to right, positive offset = to left.
   if(offset < 0){
 
     if(offset <= -COLS)
       offset = -COLS;
 
+      offset *= -1;
+
+    /*Serial.print("offset: "); // Debugging
+    Serial.println(offset);*/
+
     for(int row = 0; row < ROWS; row++){
-      for(int j = COLS-1; j >= -offset; j--)
-        snake_fields[row][j] = snake_fields[row][j+offset];
-      for(int j = 0; j < -offset; j++)
-        snake_fields[row][j] = 0;
+        snake_fields[row] >>= offset;
+        /*Serial.print(row); // Debugging
+        Serial.print(": ");
+        Serial.println(snake_fields[row], BIN);
+        delay(1000);*/
     }
 
   }else{
@@ -337,10 +336,7 @@ void display_letter(char letter, int offset){
       offset = COLS;
 
     for(int row = 0; row < ROWS; row++){
-      for(int j = 0; j < COLS-offset; j++)
-        snake_fields[row][j] = snake_fields[row][j+offset];
-      for(int j = COLS-offset; j < COLS; j++)
-        snake_fields[row][j] = 0;
+        snake_fields[row] <<= offset;
     }
 
   }
@@ -400,9 +396,9 @@ int move_snake(){
 
   switch(snake_head->direction){
     case LEFT:
-      new_head->pos_y -= 1;
-      if(new_head->pos_y < 0) // Boundaries check.
-        new_head->pos_y = COLS-1;
+      new_head->pos_y += 1; // We need to increase by one instead of decrease because now it's bit-based (highest bit = lowest column number).
+      if(new_head->pos_y > COLS-1)
+        new_head->pos_y = 0;
       break;
     case UP:
       new_head->pos_x -= 1;
@@ -410,9 +406,9 @@ int move_snake(){
         new_head->pos_x = ROWS-1;
       break;
     case RIGHT:
-      new_head->pos_y += 1;
-      if(new_head->pos_y > COLS-1)
-        new_head->pos_y = 0;
+      new_head->pos_y -= 1;
+      if(new_head->pos_y < 0) // Boundaries check.
+        new_head->pos_y = COLS-1;
       break;
     case DOWN:
       new_head->pos_x += 1;
@@ -421,8 +417,8 @@ int move_snake(){
       break;
   }
 
-    //v Simply, this checks what were the last positions drew on the screen (tail is excluded (enum))
-  if(snake_fields[new_head->pos_x][new_head->pos_y] == SNAKE) //If on the field we want to move our snake's head is a snake body/segment already, game over.
+    //v Simply, this checks what were the last positions drew on the screen (tail is excluded)
+  if( snake_fields[new_head->pos_x] & (SNAKE >> new_head->pos_y) ) //If on the field we want to move our snake's head is a snake body/segment already, game over.
     return -1; // Game Over.
 
   new_head->direction = snake_head->direction;
@@ -435,7 +431,7 @@ int move_snake(){
   if(snake_head->prev->prev == nullptr){ // If snake was of length 1 (temporary length 2), discard node/segment behind the snake's head.
     free(snake_head->prev);
     snake_head->prev = nullptr; // In order to avoid dangling pointer.
-    tail = snake_head; // setting tail to head (because snake is of length 1)/
+    tail = snake_head; // setting tail to head (because snake is of length 1).
     return 0;
   }
   
@@ -446,9 +442,10 @@ int move_snake(){
 
 }
 
+
 void draw_snake(){
 
-  set_state(snake_head->pos_x, snake_head->pos_y, SNAKE); //Marks snake body location on snake's game fields (LED matrix)
+  set_state(snake_head->pos_x, snake_head->pos_y, SNAKE); // Marks snake body location on snake's game fields (LED matrix)
 
   if(snake_head->prev == nullptr) // If snake is of length 1.
     goto apple;
@@ -457,10 +454,10 @@ void draw_snake(){
 
   while(1){
 
-    set_state(previous->pos_x, previous->pos_y, SNAKE); //Marks snake body location on snake's game fields
+    set_state(previous->pos_x, previous->pos_y, SNAKE); // Marks snake body location on snake's game fields
 
     if(previous->prev == nullptr){
-      set_state(previous->pos_x, previous->pos_y, TAIL); //Marks tail location on snake's game fields
+      set_state(previous->pos_x, previous->pos_y, TAIL); // Marks tail location on snake's game fields
       break;
     }
     previous = previous->prev;
@@ -482,7 +479,7 @@ void apple_eat_logic(){ // (Apple + eating logic).
     do{
       apple_location_x = random(ROWS); // Randomize value from 0 to ROWS-1
       apple_location_y = random(COLS);
-    }while(snake_fields[apple_location_x][apple_location_y]); // is not empty (is non-zero).
+    }while(snake_fields[apple_location_x] & (1 >> apple_location_y)); // is not empty (is non-zero).
 
   }
 
@@ -499,6 +496,12 @@ void game_logic(){
   apple_eat_logic();
   clear_states(); // Clears current states before marking.
   draw_snake(); // Marks cells on LED matrix to turn ON after the function ends.
+
+  /*Serial.println("snake_fields:"); // Debugging
+  for(int i = 0; i < ROWS; i++){
+    Serial.println(snake_fields[i], BIN);
+  }
+  delay(30000);*/
 
 }
 
@@ -527,8 +530,7 @@ int movement_wait(){
     return 0;
   }
 
-  //delay(200); // Prevent accidental "double-press".
-  timed_event(200, refresh_screen);
+  timed_event(200, refresh_screen); // Prevent accidental "double-press".
   return snake_head->direction;
 
 }
@@ -548,7 +550,7 @@ int timed_event(int time_ms, int(*task)()){
 //Could technically make it by byte shifting...
 void sliding_letters_intro(){
 
-  char intro_text[] = "SNAKE\0";
+  const char intro_text[] = "SNAKE\0";
   int letter_idx = 0;
 
   while(intro_text[letter_idx] != '\0'){
@@ -602,6 +604,8 @@ void setup() {
   pinMode(RIGHT_BUTTON, INPUT_PULLUP);
   pinMode(DOWN_BUTTON, INPUT_PULLUP);
 
+  Serial.begin(9600); // Debug
+
   //intro_screen();
   sliding_letters_intro();
 
@@ -620,7 +624,7 @@ void setup() {
   do{
     apple_location_x = random(ROWS);
     apple_location_y = random(COLS);
-  }while(snake_fields[apple_location_x][apple_location_y]); //is not empty (is non zero)
+  }while(snake_fields[apple_location_x] & (1 >> apple_location_y)); //is not empty (is non zero)
 
 }
 
@@ -632,11 +636,11 @@ void loop() {
 
   if(game_over){
     wdt_enable(WDTO_4S); // Reset the device (after 3 seconds) i.e: start the new game again.
-    while(1){
-      timed_event(500, refresh_screen); //flicker during game over rate test
-      refresh_screen(); //stuck the player on refresh screen without being able to move
-      delay(500); //flicker during game over rate test
+    while(1){ //make the player stuck on the refresh screen without being able to move
+      timed_event(500, refresh_screen);
+      delay(500); //flicker during game over rate
     }
   }
 
 }
+
