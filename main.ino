@@ -17,10 +17,6 @@
 #define PIN_G 12
 #define PIN_H 13
 
-//! Change some of the things in this code to bit manipulation instead of full bytes, if only info like ON/OFF is needed?
-//! Is this a more professional solution?
-//! Do it probably more like a training or smart memory saving.
-
 // 3 row select pins:
 // (3 demux input (output select) pins connected to arduino)
 // (i.e: pins used to select one of the 8 columns (row pins) via demux outputs)
@@ -45,6 +41,8 @@
 #define ROWS 8
 #define COLS 8
 
+#define MAX_SNAKE_LEN ROWS*COLS
+
 //#define LETTER_INTRO_TIME 1000 // in ms, time for display of every letter in intro.
 #define LETTER_SLIDE_TIME 75 // in ms, the time it takes for a letter to move by 1 cell.
 #define MOVEMENT_WAIT_TIME 1000 // in ms, time game waits for player's input.
@@ -56,21 +54,18 @@
 
 // Snake data structure
 struct snake{
-  // Previous snake's segment
-  struct snake* prev;
-  struct snake* next;
   int8_t pos_x; // "row" index
   int8_t pos_y; // "column" index
   int8_t direction;
-  int8_t type;  // 0 is empty field, 1 is snake's body, 2 is tail, and 3 is apple.
 };
-//this might be unoptimal for game logic
-//only tail instead?
+
+struct snake snake_segments[MAX_SNAKE_LEN]; // Array containing whole snake's body
+int snake_len; // *Current* snake length
+// Snake length is equal to the index of snake's tail as well
+// Index zero (0) is equal to snake's head
 
 // Stores states of all of the LEDs on the 8x8 matrix
-//byte cell_states[ROWS][COLS] = {0};
-
-byte snake_fields[ROWS] = {0b00000000};
+byte cell_states[ROWS] = {0b00000000};
 //(use these later:)
 #define EMPTY_FIELD 0
 #define SNAKE 1
@@ -78,15 +73,8 @@ byte snake_fields[ROWS] = {0b00000000};
 #define APPLE 3
 //!!!Change defines to enums later?
 //Making player unable to retrurn later?
-//byte snake_direction;
-// Position of the snake's head:
-//struct snake head = {.prev = nullptr, .next = nullptr, .pos_x = -1, .pos_y = -1, .direction = -1};
-struct snake* snake_head = malloc(sizeof(struct snake));
-struct snake* tail = snake_head;
 bool game_over = false; // If equals to true, current game is over.
-int8_t apple_location_x = -1, apple_location_y = -1;
-
-// Maybe COL_OFF, COL_ON, ROW_OFF and ROW_ON macros later?
+int8_t apple_pos_x = -1, apple_pos_y = -1;
 
 // Letters:
 
@@ -170,8 +158,11 @@ void set_state(int row, int col, byte state){
   if(state == APPLE || state == TAIL)
     state = 1;
 
-  snake_fields[row] |= (state << col);
-  
+  if(state)
+    cell_states[row] |= (0b10000000 >> col);
+  else
+    cell_states[row] &= ~(0b10000000 >> col);
+
 }
 
 // Clears all the current column states.
@@ -188,7 +179,7 @@ void clear_cols(){ // (Doesn't reset (set to 0) the actual snake_fields, but set
 // Resets all of the LED states (snake_fields) to 0.
 void clear_states(){
   for(int i = 0; i < ROWS; i++)
-    snake_fields[i] = 0b00000000;
+    cell_states[i] = 0b00000000;
 }
 
 // Decodes passed value to a selected demux's output pin
@@ -265,7 +256,7 @@ int refresh_screen(){
     demux_row_decode(i);
 
     for(int j = 0; j < COLS; j++){
-        digitalWrite( j + PIN_A, !(snake_fields[i] & (0b10000000 >> j)) ); // We had to change cell states to negation before applying because for columns LOW = ON.
+        digitalWrite( j + PIN_A, !(cell_states[i] & (0b10000000 >> j)) ); // We had to change cell states to negation before applying because for columns LOW = ON.
     }
     
     clear_cols();
@@ -295,19 +286,19 @@ void display_letter(char letter, int offset){
 
   switch(letter){
     case 'S':
-      memcpy(snake_fields, LETTER_S, sizeof(LETTER_S));
+      memcpy(cell_states, LETTER_S, sizeof(LETTER_S));
       break;
     case 'N':
-      memcpy(snake_fields, LETTER_N, sizeof(LETTER_N));
+      memcpy(cell_states, LETTER_N, sizeof(LETTER_N));
       break;
     case 'A':
-      memcpy(snake_fields, LETTER_A, sizeof(LETTER_A));
+      memcpy(cell_states, LETTER_A, sizeof(LETTER_A));
       break;
     case 'K':
-      memcpy(snake_fields, LETTER_K, sizeof(LETTER_K));
+      memcpy(cell_states, LETTER_K, sizeof(LETTER_K));
       break;
     case 'E':
-      memcpy(snake_fields, LETTER_E, sizeof(LETTER_E));
+      memcpy(cell_states, LETTER_E, sizeof(LETTER_E));
       break;
   }
 
@@ -323,7 +314,7 @@ void display_letter(char letter, int offset){
     Serial.println(offset);*/
 
     for(int row = 0; row < ROWS; row++){
-        snake_fields[row] >>= offset;
+        cell_states[row] >>= offset;
         /*Serial.print(row); // Debugging
         Serial.print(": ");
         Serial.println(snake_fields[row], BIN);
@@ -336,7 +327,7 @@ void display_letter(char letter, int offset){
       offset = COLS;
 
     for(int row = 0; row < ROWS; row++){
-        snake_fields[row] <<= offset;
+        cell_states[row] <<= offset;
     }
 
   }
@@ -344,100 +335,113 @@ void display_letter(char letter, int offset){
 
 void add_snake_segment(){
 
-  struct snake* new_node = malloc(sizeof(struct snake));
+  snake_segments[snake_len] = snake_segments[snake_len-1]; //new tail
 
-  if(snake_head->prev == nullptr){ // in case snake is of length 1.
-
-    tail = new_node; // head not longer equals tail, now head is one segment and tail is one
-    tail->next = snake_head;
-    tail->prev = nullptr;
-    snake_head->prev = tail;
-
-  }else{ // in case snake is of length 2+.
-    
-    new_node->next = tail;
-    new_node->prev = nullptr;
-    tail->prev = new_node; // Now current tail becomes normal second to last snake segment
-    tail = new_node; // And the new_node is the new tail.
-
-  }
-
-  tail->pos_x = tail->next->pos_x;
-  tail->pos_y = tail->next->pos_y;
-
-  switch(tail->next->direction){
+  switch(snake_segments[snake_len].direction){
     case LEFT:
-      tail->pos_y += 1; // *(-1) because it will be spawn/added 1 pixel to the opposite direction.
+      snake_segments[snake_len].pos_y += 1;
+      if(snake_segments[snake_len].pos_y >= COLS)
+        snake_segments[snake_len].pos_y = 0;
       break;
     case UP:
-      tail->pos_x += 1;
+      snake_segments[snake_len].pos_x += 1;
+      if(snake_segments[snake_len].pos_x >= ROWS)
+        snake_segments[snake_len].pos_x = 0;
       break;
     case RIGHT:
-      tail->pos_y -= 1;
+      snake_segments[snake_len].pos_y -= 1;
+      if(snake_segments[snake_len].pos_y < 0)
+        snake_segments[snake_len].pos_y = 0;
       break;
     case DOWN:
-      tail->pos_x -= 1;
+      snake_segments[snake_len].pos_x -= 1;
+      if(snake_segments[snake_len].pos_x < 0)
+        snake_segments[snake_len].pos_x = 0;
       break;
   }
 
-  tail->direction = tail->next->direction;
+  snake_len++;
+
   return;
 }
 
 int move_snake(){
 
   //! Instead of moving all the snake segments, just make a new segment in the new direction of the head, and assign tail to it's "next" pointer then delete old tail.
+  //  or do this statically just as (like) right now
 
-  // Head (snake's front logic)
-  struct snake* new_head = malloc(sizeof(struct snake)); //0x2
-  snake_head->next = new_head; //0x2
-  new_head->pos_x = snake_head->pos_x;
-  new_head->pos_y = snake_head->pos_y;
+  /*Serial.println("Snake segments (before):");
+  for(int i = 0; i < snake_len+1; i++){
+    Serial.print(i); Serial.println(": ");
+    Serial.print("pos_x: "); Serial.println(snake_segments[i].pos_x);
+    Serial.print("pos_y: "); Serial.println(snake_segments[i].pos_y);
+    Serial.print("direction: "); Serial.println(snake_segments[i].direction);
+  }
+  //delay(10000);*/
 
-  switch(snake_head->direction){
+  for(int i = snake_len; i > 0; i--){
+    snake_segments[i] = snake_segments[i-1];
+  }
+
+  /*Serial.println("Snake segments (after):");
+  for(int i = 0; i < snake_len+1; i++){
+    Serial.print(i); Serial.println(": ");
+    Serial.print("pos_x: "); Serial.println(snake_segments[i].pos_x);
+    Serial.print("pos_y: "); Serial.println(snake_segments[i].pos_y);
+    Serial.print("direction: "); Serial.println(snake_segments[i].direction);
+  }
+  //delay(10000);*/
+
+  switch(snake_segments[0].direction){
     case LEFT:
-      new_head->pos_y += 1; // We need to increase by one instead of decrease because now it's bit-based (highest bit = lowest column number).
-      if(new_head->pos_y > COLS-1)
-        new_head->pos_y = 0;
+      snake_segments[0].pos_y -= 1;
+      if(snake_segments[0].pos_y < 0)
+        snake_segments[0].pos_y = COLS-1;
       break;
     case UP:
-      new_head->pos_x -= 1;
-      if(new_head->pos_x < 0)
-        new_head->pos_x = ROWS-1;
+      snake_segments[0].pos_x -= 1;
+      if(snake_segments[0].pos_x < 0)
+        snake_segments[0].pos_x = ROWS-1;
       break;
     case RIGHT:
-      new_head->pos_y -= 1;
-      if(new_head->pos_y < 0) // Boundaries check.
-        new_head->pos_y = COLS-1;
+      snake_segments[0].pos_y += 1;
+      if(snake_segments[0].pos_y > COLS-1)
+        snake_segments[0].pos_y = 0;
       break;
     case DOWN:
-      new_head->pos_x += 1;
-      if(new_head->pos_x > ROWS-1)
-        new_head->pos_x = 0;
+      snake_segments[0].pos_x += 1;
+      if(snake_segments[0].pos_x > ROWS-1)
+        snake_segments[0].pos_x = 0;
       break;
   }
 
-    //v Simply, this checks what were the last positions drew on the screen (tail is excluded)
-  if( snake_fields[new_head->pos_x] & (SNAKE >> new_head->pos_y) ) //If on the field we want to move our snake's head is a snake body/segment already, game over.
+  /*Serial.println("Snake segments (after 2):");
+  for(int i = 0; i < snake_len+1; i++){
+    Serial.print(i); Serial.println(": ");
+    Serial.print("pos_x: "); Serial.println(snake_segments[i].pos_x);
+    Serial.print("pos_y: "); Serial.println(snake_segments[i].pos_y);
+    Serial.print("direction: "); Serial.println(snake_segments[i].direction);
+  }
+  //delay(10000);
+
+  Serial.println("Info before \"if\":");
+  //Serial.print("apple_pos_x: "); Serial.println(apple_pos_x);
+  //Serial.print("apple_pos_y: "); Serial.println(apple_pos_y);
+  Serial.print("cell_states[head.pos_x]: "); Serial.println(cell_states[snake_segments[0].pos_x], BIN);
+  Serial.print("logic val: "); Serial.println(cell_states[snake_segments[0].pos_x] & (0b10000000 >> snake_segments[0].pos_y), BIN);*/
+  //delay(2000);
+
+  //more opitmal than checking every cell.
+
+  if( cell_states[snake_segments[0].pos_x] & (0b10000000 >> snake_segments[0].pos_y) // If on the field we want to move our snake's head is a snake body/segment already, game over.
+   && !(snake_segments[0].pos_x == apple_pos_x && snake_segments[0].pos_y == apple_pos_y)
+   && !(snake_segments[0].pos_x == snake_segments[snake_len].pos_x && snake_segments[0].pos_y == snake_segments[snake_len].pos_y))
     return -1; // Game Over.
 
-  new_head->direction = snake_head->direction;
-  new_head->prev = snake_head; //0x1
-  new_head->next = nullptr;
-  snake_head = new_head; //0x2
-  //^variable storing 0x1, stores 0x2 now.
+  snake_segments[snake_len].pos_x = -1;
+  snake_segments[snake_len].pos_y = -1;
+  snake_segments[snake_len].direction = -1;
 
-  // Tail (snake's back logic)
-  if(snake_head->prev->prev == nullptr){ // If snake was of length 1 (temporary length 2), discard node/segment behind the snake's head.
-    free(snake_head->prev);
-    snake_head->prev = nullptr; // In order to avoid dangling pointer.
-    tail = snake_head; // setting tail to head (because snake is of length 1).
-    return 0;
-  }
-  
-  tail = tail->next;
-  free(tail->prev);
-  tail->prev = nullptr; // In order to avoid dangling pointer.
   return 0;
 
 }
@@ -445,41 +449,24 @@ int move_snake(){
 
 void draw_snake(){
 
-  set_state(snake_head->pos_x, snake_head->pos_y, SNAKE); // Marks snake body location on snake's game fields (LED matrix)
-
-  if(snake_head->prev == nullptr) // If snake is of length 1.
-    goto apple;
-
-  struct snake* previous = snake_head->prev;
-
-  while(1){
-
-    set_state(previous->pos_x, previous->pos_y, SNAKE); // Marks snake body location on snake's game fields
-
-    if(previous->prev == nullptr){
-      set_state(previous->pos_x, previous->pos_y, TAIL); // Marks tail location on snake's game fields
-      break;
-    }
-    previous = previous->prev;
-
+  for(int i = 0; i < snake_len; i++){
+    set_state(snake_segments[i].pos_x, snake_segments[i].pos_y, SNAKE);
   }
 
-  apple:
-
-  set_state(apple_location_x, apple_location_y, APPLE); //Marks apple location on snake's game fields
+  set_state(apple_pos_x, apple_pos_y, APPLE); //Marks apple location on snake's game fields
 }
 
 void apple_eat_logic(){ // (Apple + eating logic).
 
   // If snake's head hits the apple's cell.
-  if(snake_head->pos_x == apple_location_x && snake_head->pos_y == apple_location_y){
+  if(snake_segments[0].pos_x == apple_pos_x && snake_segments[0].pos_y == apple_pos_y){
 
     add_snake_segment(); // Extend snake's length by 1.
 
     do{
-      apple_location_x = random(ROWS); // Randomize value from 0 to ROWS-1
-      apple_location_y = random(COLS);
-    }while(snake_fields[apple_location_x] & (1 >> apple_location_y)); // is not empty (is non-zero).
+      apple_pos_x = random(ROWS); // Randomize value from 0 to ROWS-1
+      apple_pos_y = random(COLS);
+    }while(cell_states[apple_pos_x] & (0b10000000 >> apple_pos_y)); // is not empty (is non-zero).
 
   }
 
@@ -497,11 +484,18 @@ void game_logic(){
   clear_states(); // Clears current states before marking.
   draw_snake(); // Marks cells on LED matrix to turn ON after the function ends.
 
-  /*Serial.println("snake_fields:"); // Debugging
+  /*Serial.println("cell states:"); // Debugging
   for(int i = 0; i < ROWS; i++){
-    Serial.println(snake_fields[i], BIN);
+    Serial.println(cell_states[i], BIN);
   }
-  delay(30000);*/
+  Serial.println("Snake segments:");
+  for(int i = 0; i < snake_len+1; i++){
+    Serial.print(i); Serial.println(": ");
+    Serial.print("pos_x: "); Serial.println(snake_segments[i].pos_x);
+    Serial.print("pos_y: "); Serial.println(snake_segments[i].pos_y);
+    Serial.print("direction: "); Serial.println(snake_segments[i].direction);
+  }
+  delay(15000);*/
 
 }
 
@@ -512,26 +506,26 @@ int movement_wait(){
 
   if(digitalRead(LEFT_BUTTON) == LOW){
 
-    snake_head->direction = LEFT;
+    snake_segments[0].direction = LEFT;
 
   }else if(digitalRead(UP_BUTTON) == LOW){
 
-    snake_head->direction = UP;
+    snake_segments[0].direction = UP;
 
   }else if(digitalRead(RIGHT_BUTTON) == LOW){
 
-    snake_head->direction = RIGHT;
+    snake_segments[0].direction = RIGHT;
 
   }else if(digitalRead(DOWN_BUTTON) == LOW){
 
-    snake_head->direction = DOWN;
+    snake_segments[0].direction = DOWN;
     
   }else{
     return 0;
   }
 
   timed_event(200, refresh_screen); // Prevent accidental "double-press".
-  return snake_head->direction;
+  return snake_segments[0].direction;
 
 }
 
@@ -604,17 +598,25 @@ void setup() {
   pinMode(RIGHT_BUTTON, INPUT_PULLUP);
   pinMode(DOWN_BUTTON, INPUT_PULLUP);
 
+  for(int i = 0; i < MAX_SNAKE_LEN; i++){
+    snake_segments[i].pos_x = -1;
+    snake_segments[i].pos_y = -1;
+    snake_segments[i].direction = -1;
+  }
+
   Serial.begin(9600); // Debug
 
   //intro_screen();
   sliding_letters_intro();
 
+  clear_states();
+
   //setting up the beginning position of the snake.
-  snake_head->pos_x = ROWS/2 - 1;
-  snake_head->pos_y = COLS/2 - 1;
-  snake_head->prev = nullptr;
-  snake_head->next = nullptr;
-  snake_head->direction = RIGHT;
+  snake_segments[0].pos_x = ROWS/2 - 1;
+  snake_segments[0].pos_y = COLS/2 - 1;
+  snake_segments[0].direction = RIGHT;
+
+  snake_len++;
 
   add_snake_segment();
   add_snake_segment();
@@ -622,9 +624,19 @@ void setup() {
   randomSeed(analogRead(A5)); // Randomizing the seed
 
   do{
-    apple_location_x = random(ROWS);
-    apple_location_y = random(COLS);
-  }while(snake_fields[apple_location_x] & (1 >> apple_location_y)); //is not empty (is non zero)
+    apple_pos_x = random(ROWS);
+    apple_pos_y = random(COLS);
+  }while(cell_states[apple_pos_x] & (0b10000000 >> apple_pos_y)); //is not empty (is non zero)
+
+}
+
+void reset_game(){
+
+  wdt_enable(WDTO_4S); // Reset the device (after 3 seconds) i.e: start the new game again.
+  while(1){ //make the player stuck on the refresh screen without being able to move
+    timed_event(500, refresh_screen);
+    delay(500); //flicker during game over rate
+  }
 
 }
 
@@ -635,12 +647,7 @@ void loop() {
   game_logic();
 
   if(game_over){
-    wdt_enable(WDTO_4S); // Reset the device (after 3 seconds) i.e: start the new game again.
-    while(1){ //make the player stuck on the refresh screen without being able to move
-      timed_event(500, refresh_screen);
-      delay(500); //flicker during game over rate
-    }
+    reset_game();
   }
 
 }
-
